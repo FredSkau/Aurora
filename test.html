@@ -1,0 +1,207 @@
+<div id="colorBox" style="position: absolute; inset: 0; overflow: hidden">
+  <canvas id="bg" style="position: absolute; inset: 0"></canvas>
+
+  <div
+    id="wxContainer"
+    style="
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      pointer-events: none;
+      z-index: 10;
+      font-family: system-ui, sans-serif;
+    "
+  >
+    <div id="wxLoading" style="color: #fff; animation: pulse 1.5s infinite">
+      Henter&nbsp;værdata…
+    </div>
+    <div id="wxError" style="color: #fff; display: none">
+      Kunne ikke hente værdata
+    </div>
+
+    <div
+      id="wxData"
+      style="
+        background: transparent;
+        backdrop-filter: blur(4px);
+        padding: 12px;
+        border-radius: 4px;
+        color: #0b0b26;
+        gap: 15px;
+        flex-direction: column;
+        align-items: flex-start;
+        pointer-events: none;
+        display: flex;
+      "
+    >
+      <div style="font-size: 14px; font-weight: 385">
+        Data fra Meteorologisk institutt
+      </div>
+      <div style="display: flex; gap: 24px">
+        <div
+          style="display: flex; flex-direction: column; align-items: flex-start"
+        >
+          <span style="font-weight: 520">Temp</span
+          ><span id="wxTemp">20°C</span>
+        </div>
+        <div
+          style="display: flex; flex-direction: column; align-items: flex-start"
+        >
+          <span style="font-weight: 520">Vind</span
+          ><span id="wxWind">2 m/s</span>
+        </div>
+        <div
+          style="display: flex; flex-direction: column; align-items: flex-start"
+        >
+          <span style="font-weight: 520">Tid</span
+          ><span id="wxTime">12:00</span>
+        </div>
+        <div
+          style="display: flex; flex-direction: column; align-items: flex-start"
+        >
+          <span style="font-weight: 520">Sted</span
+          ><span id="wxPlace">Norge, Oslo</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    @keyframes pulse {
+      0% {
+        opacity: 0.4;
+      }
+      50% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0.4;
+      }
+    }
+  </style>
+
+  <script>
+    window.addEventListener("DOMContentLoaded", () => {
+      const $ = (i) => document.getElementById(i),
+        l = $("wxLoading"),
+        e = $("wxError"),
+        t = $("wxTemp"),
+        w = $("wxWind"),
+        m = $("wxTime"),
+        p = $("wxPlace"),
+        A = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
+      let F = 2;
+      const j = (u) =>
+        fetch(u).then((r) => {
+          if (!r.ok) throw 0;
+          return r.json();
+        });
+      function real(lat, lon) {
+        return j(`${A}?lat=${lat}&lon=${lon}`).then((r) => {
+          const s = r.properties.timeseries[0];
+          return {
+            temp: s.data.instant.details.air_temperature,
+            wind: s.data.instant.details.wind_speed,
+            time: s.time,
+          };
+        });
+      }
+      function geo(lat, lon) {
+        return j(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`
+        )
+          .then((r) => {
+            const a = r.address;
+            return `${a.country || ""}, ${
+              a.city || a.town || a.village || a.municipality || a.county || ""
+            }`.replace(/^, ?/, "");
+          })
+          .catch(() => null);
+      }
+      function update(d) {
+        l.style.display = "none";
+        e.style.display = "none";
+        t.textContent = d.temp.toFixed(1) + "°C";
+        w.textContent = d.wind.toFixed(1) + " m/s";
+        m.textContent = new Date().toLocaleTimeString("nb-NO", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+        p.textContent = d.place;
+        F = d.wind;
+      }
+      function fetchWx(lat, lon) {
+        real(lat, lon)
+          .then(async (x) => {
+            x.place = (await geo(lat, lon)) || x.place || "Ukjent sted";
+            update(x);
+          })
+          .catch(() => {});
+      }
+      navigator.geolocation.getCurrentPosition(
+        ({ coords: c }) => fetchWx(c.latitude, c.longitude),
+        () => fetchWx(59.9127, 10.7461),
+        { maximumAge: 6e5 }
+      );
+      const canvas = $("bg"),
+        gl = canvas.getContext("webgl");
+      if (!gl) return;
+      const VS = `attribute vec2 position;varying vec2 vUv;void main(){vUv=position*.5+.5;gl_Position=vec4(position,0.0,1.0);}`,
+        FS = `precision mediump float;varying vec2 vUv;uniform vec2 iResolution;uniform float iTime;uniform float uWindSpeed;uniform vec3 uColorA;uniform vec3 uColorB;uniform vec3 uColorC;uniform vec3 uColorD;uniform vec3 uColorE;vec4 mod289(vec4 x){return x-floor(x*0.0034602076)*289.0;}vec3 mod289(vec3 x){return x-floor(x*0.0034602076)*289.0;}vec4 permute(vec4 x){return mod289((x*34.0+1.0)*x);}float snoise(vec3 v){const vec2 C=vec2(.16666667,.33333333);const vec4 D=vec4(0.,.5,1.,2.);vec3 i=floor(v+dot(v,C.yyy));vec3 x=v-i+dot(i,C.xxx);vec3 g=step(x.yzx,x.xyz);vec3 l=1.-g;vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);vec3 x1=x-i1+C.xxx;vec3 x2=x-i2+C.yyy;vec3 x3=x-D.yyy;i=mod289(i);vec4 p=permute(permute(permute(i.z+vec4(0.,i1.z,i2.z,1.))+i.y+vec4(0.,i1.y,i2.y,1.))+i.x+vec4(0.,i1.x,i2.x,1.));const float n_=0.14285714;vec3 ns=n_*D.wyz-D.xzx;vec4 j=p-49.*floor(p*ns.z*ns.z);vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.*x_);vec4 X=x_*ns.x+ns.yyyy;vec4 Y=y_*ns.x+ns.yyyy;vec4 h=1.-abs(X)-abs(Y);vec4 b0=vec4(X.xy,Y.xy);vec4 b1=vec4(X.zw,Y.zw);vec4 s0=floor(b0)*2.+1.;vec4 s1=floor(b1)*2.+1.;vec4 sh=-step(h,vec4(0.));vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);vec4 norm=inversesqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;vec4 m=max(.6-vec4(dot(x,x),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);m*=m;return 42.*dot(m*m,vec4(dot(p0,x),dot(p1,x1),dot(p2,x2),dot(p3,x3)));}vec3 pal(float t){float a=smoothstep(0.,.25,t),b=smoothstep(.25,.5,t),c=smoothstep(.5,.75,t),d=smoothstep(.75,1.,t);vec3 p=mix(uColorA,uColorB,a);p=mix(p,uColorC,b);p=mix(p,uColorD,c);p=mix(p,uColorE,d);return pow(p,vec3(.45454545));}void main(){vec2 uv=vUv;float s=uWindSpeed*.01;vec2 o=vec2(snoise(vec3(uv.x*.5-iTime*s*.01,uv.y*.01,iTime*.01)));float E=(uv.y*(1.-uv.y))*2.;uv+=o*E;uv+=vec2(snoise(vec3(uv.x-iTime*s,uv.y*2.*E,iTime*s)))*.5*E;uv+=vec2(snoise(vec3(uv.x*1.5-iTime*s*2.,uv.y*3.*E,iTime*s)))*.2*E;gl_FragColor=vec4(pal(uv.y),1.);} `;
+      const sh = (t, s) => {
+        const r = gl.createShader(t);
+        gl.shaderSource(r, s);
+        gl.compileShader(r);
+        return r;
+      };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+      gl.linkProgram(prog);
+      gl.useProgram(prog);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+        gl.STATIC_DRAW
+      );
+      const pos = gl.getAttribLocation(prog, "position");
+      gl.enableVertexAttribArray(pos);
+      gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+      const uni = (n) => gl.getUniformLocation(prog, n),
+        uRes = uni("iResolution"),
+        uTime = uni("iTime"),
+        uWind = uni("uWindSpeed");
+      gl.uniform3f(uni("uColorA"), 0.812, 0.808, 1);
+      gl.uniform3f(uni("uColorB"), 0.812, 0.475, 0.765);
+      gl.uniform3f(uni("uColorC"), 0.894, 0.573, 0.49);
+      gl.uniform3f(uni("uColorD"), 0.812, 0.808, 1);
+      gl.uniform3f(uni("uColorE"), 0.231, 0.2, 0.761);
+      const resize = () => {
+        const d = window.devicePixelRatio || 1,
+          w = document.getElementById("colorBox").clientWidth * d,
+          h = document.getElementById("colorBox").clientHeight * d;
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+          gl.viewport(0, 0, w, h);
+          gl.uniform2f(uRes, w, h);
+        }
+      };
+      new ResizeObserver(resize).observe(document.getElementById("colorBox"));
+      resize();
+      let start = null;
+      const loop = (now) => {
+        start || (start = now);
+        gl.useProgram(prog);
+        gl.uniform1f(uTime, (now - start) * 0.001);
+        gl.uniform1f(uWind, F);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    });
+  </script>
+</div>
