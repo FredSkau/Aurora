@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Nordic Sky - WebGL Visualization</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111827; font-family: 'Inter', sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        .controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background-color: rgba(17, 24, 39, 0.9); /* bg-gray-900 with opacity */
+            color: #D1D5DB; /* text-gray-300 */
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            z-index: 10;
+            width: 300px;
+        }
+        .controls h2 {
+            font-size: 1.25rem; /* text-xl */
+            font-weight: 600; /* font-semibold */
+            margin-bottom: 1rem;
+            color: #F3F4F6; /* text-gray-100 */
+        }
+        .control-group { margin-bottom: 1rem; }
+        .control-group label {
+            display: block;
+            font-size: 0.875rem; /* text-sm */
+            margin-bottom: 0.25rem;
+            color: #9CA3AF; /* text-gray-400 */
+        }
+        .control-group input[type="range"], .control-group select {
+            width: 100%;
+            padding: 0.25rem;
+            background-color: #374151; /* bg-gray-700 */
+            border: 1px solid #4B5563; /* border-gray-600 */
+            border-radius: 6px;
+            color: #F3F4F6; /* text-gray-100 */
+        }
+        .control-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #3B82F6; /* bg-blue-500 */
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        .control-group input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: #3B82F6; /* bg-blue-500 */
+            cursor: pointer;
+            border-radius: 50%;
+            border: none;
+        }
+        .control-group .value-display {
+            font-size: 0.75rem; /* text-xs */
+            color: #6B7280; /* text-gray-500 */
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+
+    <div class="controls">
+        <h2>Weather Controls</h2>
+
+        <div class="control-group">
+            <label for="temperature">Temperature (°C): <span id="temperatureValue">-5</span></label>
+            <input type="range" id="temperature" min="-20" max="30" value="-5" step="0.1">
+        </div>
+
+        <div class="control-group">
+            <label for="windSpeed">Wind Speed (m/s): <span id="windSpeedValue">2</span></label>
+            <input type="range" id="windSpeed" min="0" max="30" value="2" step="0.1">
+        </div>
+
+        <div class="control-group">
+            <label for="cloudCover">Cloud Cover (%): <span id="cloudCoverValue">20</span></label>
+            <input type="range" id="cloudCover" min="0" max="100" value="20" step="1">
+        </div>
+
+        <div class="control-group">
+            <label for="timeOfDay">Time of Day (0-24h): <span id="timeOfDayValue">18.0</span></label>
+            <input type="range" id="timeOfDay" min="0" max="24" value="18.0" step="0.1">
+        </div>
+        
+        <div class="control-group">
+            <label for="precipitationType">Precipitation Type: <span id="precipitationTypeValue">None</span></label>
+            <select id="precipitationType">
+                <option value="0">None</option>
+                <option value="1">Rain</option>
+                <option value="2">Snow</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="precipitationIntensity">Precipitation Intensity: <span id="precipitationIntensityValue">0</span></label>
+            <input type="range" id="precipitationIntensity" min="0" max="1" value="0" step="0.01" disabled>
+        </div>
+
+        <div class="control-group">
+            <label for="auroraActivity">Aurora Activity (Kp): <span id="auroraActivityValue">0</span></label>
+            <input type="range" id="auroraActivity" min="0" max="9" value="0" step="0.1">
+        </div>
+    </div>
+
+    <script id="vertexShader" type="x-shader/x-vertex">
+        attribute vec4 a_position;
+        void main() {
+            gl_Position = a_position;
+        }
+    </script>
+
+    <script id="fragmentShader" type="x-shader/x-fragment">
+        precision highp float;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+
+        uniform float u_temperature; // -20 to 30 C
+        uniform float u_windSpeed; // 0 to 30 m/s
+        uniform float u_cloudCover; // 0 to 1 (0% to 100%)
+        uniform float u_timeOfDay; // 0 to 1 (0h to 24h, normalized)
+        uniform float u_precipitationType; // 0: None, 1: Rain, 2: Snow
+        uniform float u_precipitationIntensity; // 0 to 1
+        uniform float u_auroraActivity; // 0 to 1 (0 to 9 Kp, normalized)
+
+        // Simplex Noise functions (adapted from Stefan Gustavson's and Ashima Arts' work)
+        vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+        vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+        float snoise(vec3 v) {
+            const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+            const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+            vec3 i  = floor(v + dot(v, C.yyy) );
+            vec3 x0 =   v - i + dot(i, C.xxx) ;
+            vec3 g = step(x0.yzx, x0.xyz);
+            vec3 l = 1.0 - g;
+            vec3 i1 = min( g.xyz, l.zxy );
+            vec3 i2 = max( g.xyz, l.zxy );
+            vec3 x1 = x0 - i1 + C.xxx;
+            vec3 x2 = x0 - i2 + C.yyy;
+            vec3 x3 = x0 - D.yyy;
+            i = mod289(i);
+            vec4 p = permute( permute( permute(
+                        i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+                    + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+                    + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+            float n_ = 0.142857142857; // 1.0/7.0
+            vec3  ns = n_ * D.wyz - D.xzx;
+            vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+            vec4 x_ = floor(j * ns.z);
+            vec4 y_ = floor(j - 7.0 * x_ );
+            vec4 x = x_ *ns.x + ns.yyyy;
+            vec4 y = y_ *ns.x + ns.yyyy;
+            vec4 h = 1.0 - abs(x) - abs(y);
+            vec4 b0 = vec4( x.xy, y.xy );
+            vec4 b1 = vec4( x.zw, y.zw );
+            vec4 s0 = floor(b0)*2.0 + 1.0;
+            vec4 s1 = floor(b1)*2.0 + 1.0;
+            vec4 sh = -step(h, vec4(0.0));
+            vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+            vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+            vec3 p0 = vec3(a0.xy,h.x);
+            vec3 p1 = vec3(a0.zw,h.y);
+            vec3 p2 = vec3(a1.xy,h.z);
+            vec3 p3 = vec3(a1.zw,h.w);
+            vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+            p0 *= norm.x;
+            p1 *= norm.y;
+            p2 *= norm.z;
+            p3 *= norm.w;
+            vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+            m = m * m;
+            return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+        }
+
+        // Fractional Brownian Motion
+        float fbm(vec3 p, int octaves, float persistence) {
+            float total = 0.0;
+            float frequency = 1.0;
+            float amplitude = 1.0;
+            float maxValue = 0.0;
+            for(int i=0; i<octaves; i++) {
+                total += snoise(p * frequency) * amplitude;
+                maxValue += amplitude;
+                amplitude *= persistence;
+                frequency *= 2.0;
+            }
+            return total/maxValue;
+        }
+
+        // Color definitions
+        const vec3 COLOR_DEEP_BLUE = vec3(0.05, 0.1, 0.3);
+        const vec3 COLOR_MID_BLUE = vec3(0.2, 0.4, 0.7);
+        const vec3 COLOR_WINTER_WHITE = vec3(0.9, 0.95, 1.0);
+        const vec3 COLOR_TEAL = vec3(0.1, 0.5, 0.6);
+        const vec3 COLOR_LAVENDER = vec3(0.6, 0.5, 0.8);
+        const vec3 COLOR_PALE_GREEN = vec3(0.7, 0.9, 0.7);
+        const vec3 COLOR_PEACH = vec3(1.0, 0.7, 0.5);
+        const vec3 COLOR_PINK = vec3(1.0, 0.6, 0.7);
+        const vec3 COLOR_ORANGE = vec3(1.0, 0.5, 0.2);
+        const vec3 COLOR_LIGHT_SKY_BLUE = vec3(0.5, 0.7, 1.0);
+        const vec3 COLOR_NIGHT_INDIGO = vec3(0.1, 0.0, 0.2);
+        const vec3 COLOR_NIGHT_DARK_BLUE = vec3(0.0, 0.05, 0.15);
+        const vec3 COLOR_AURORA_GREEN = vec3(0.1, 0.9, 0.3);
+        const vec3 COLOR_AURORA_PINK = vec3(0.9, 0.2, 0.7);
+        const vec3 COLOR_AURORA_PURPLE = vec3(0.5, 0.1, 0.8);
+        const vec3 COLOR_CLOUDY_GREY = vec3(0.5, 0.5, 0.55);
+        const vec3 COLOR_RAIN_GREY = vec3(0.4, 0.45, 0.5);
+
+
+        // Helper to map temperature to a 0-1 value (cold to warm)
+        float map_temperature(float temp) {
+            return smoothstep(-20.0, 30.0, temp); // Normalize temp from -20..30 to 0..1
+        }
+
+        // Helper for time of day effects (0=midnight, 0.25=sunrise, 0.5=midday, 0.75=sunset, 1=midnight)
+        float day_cycle(float t) {
+            return 0.5 - 0.5 * cos(t * 2.0 * 3.1415926535); // Simple cosine cycle for brightness
+        }
+        float sunrise_sunset_factor(float t) {
+            float morning = smoothstep(0.15, 0.35, t) - smoothstep(0.35, 0.45, t); // Peaks around 0.25 (6 AM)
+            float evening = smoothstep(0.65, 0.85, t) - smoothstep(0.85, 0.95, t); // Peaks around 0.75 (6 PM)
+            return max(morning, evening);
+        }
+
+
+        void main() {
+            vec2 st = gl_FragCoord.xy / u_resolution.xy;
+            st.y = 1.0 - st.y; // Flip Y for typical sky orientation
+
+            float time = u_time * 0.05; // Slower global time progression
+
+            // --- Weather Parameter Processing ---
+            float temp_factor = map_temperature(u_temperature); // 0 for cold, 1 for warm
+            float day_brightness = day_cycle(u_timeOfDay); // 0 for night, 1 for midday
+            float sun_glow = sunrise_sunset_factor(u_timeOfDay); // Strongest at sunrise/sunset
+
+            // --- Base Color Selection based on Temperature and Time of Day ---
+            // vec3 color1, color2, color3; // Removed unused variables
+
+            // Night colors
+            vec3 night_base = mix(COLOR_NIGHT_DARK_BLUE, COLOR_NIGHT_INDIGO, 0.5 + 0.5 * sin(st.y * 2.0 + time * 0.5));
+            
+            // Daytime colors
+            vec3 cold_day_sky = mix(COLOR_MID_BLUE, COLOR_WINTER_WHITE, st.y * 0.8);
+            vec3 warm_day_sky = mix(COLOR_LIGHT_SKY_BLUE, COLOR_PEACH, st.y * 0.6 + 0.1 * sin(time));
+            vec3 day_sky = mix(cold_day_sky, warm_day_sky, temp_factor);
+
+            // Sunrise/Sunset colors
+            vec3 sunrise_colors = mix(COLOR_ORANGE, COLOR_PINK, 0.5 + 0.5 * sin(st.x * 3.0));
+            vec3 sunset_colors = mix(COLOR_PINK, COLOR_LAVENDER, 0.5 + 0.5 * cos(st.x * 2.0));
+            vec3 sun_transition_colors = mix(sunrise_colors, sunset_colors, smoothstep(0.5, 0.6, u_timeOfDay));
+            
+            // Base sky color by interpolating between night, day, and sunrise/sunset
+            vec3 base_sky_color = night_base;
+            base_sky_color = mix(base_sky_color, day_sky, day_brightness * (1.0 - sun_glow));
+            base_sky_color = mix(base_sky_color, sun_transition_colors, sun_glow);
+
+
+            // --- Noise Layers for Cloud/Atmospheric Effects ---
+            // Layer 1: Broad, slow-moving clouds/atmosphere
+            float noise_val1 = fbm(vec3(st * (2.0 + u_windSpeed * 0.1), time * (0.1 + u_windSpeed * 0.02)), 4, 0.5);
+            noise_val1 = (noise_val1 + 1.0) * 0.5; // Normalize to 0-1
+
+            // Layer 2: Finer, faster turbulence
+            // Corrected vec3 constructor for the first argument of fbm:
+            vec2 noise2_xy_component = st * (6.0 + u_windSpeed * 0.3) + vec2(time * (0.3 + u_windSpeed * 0.1), time * (0.2 + u_windSpeed * 0.05));
+            float noise_val2 = fbm(vec3(noise2_xy_component, time * 0.25), 5, 0.45); // Used time * 0.25 for z component
+            noise_val2 = (noise_val2 + 1.0) * 0.5; // Normalize to 0-1
+
+            // Combine noise for cloud patterns
+            float cloud_pattern = smoothstep(0.3, 0.7, noise_val1 * 0.7 + noise_val2 * 0.3);
+            
+            // Modulate base sky with cloud patterns
+            vec3 cloud_color_influence = mix(COLOR_WINTER_WHITE, COLOR_CLOUDY_GREY, temp_factor * 0.5 + 0.5);
+            vec3 sky_with_clouds = mix(base_sky_color, cloud_color_influence, cloud_pattern * u_cloudCover * 0.8); // u_cloudCover is 0-1
+
+            // --- Aurora Effect ---
+            vec3 aurora_color = vec3(0.0);
+            if (u_auroraActivity > 0.05 && day_brightness < 0.3) { // Aurora visible at night
+                float aurora_strength = u_auroraActivity; // u_auroraActivity is 0-1
+                
+                // Wavy patterns for aurora
+                float aurora_wave_y = st.y * 4.0 + time * 0.5 * (1.0 + u_windSpeed * 0.1);
+                float aurora_wave_x = st.x * 2.0 + snoise(vec3(st * 1.5, time * 0.3)) * 0.5;
+                
+                float n_aurora = 0.0;
+                n_aurora += sin(aurora_wave_y + cos(aurora_wave_x * 1.2 + time * 0.2) * 2.0) * 0.4;
+                n_aurora += sin(aurora_wave_y * 0.7 + cos(aurora_wave_x * 0.8 - time * 0.15) * 2.5) * 0.3;
+                n_aurora += snoise(vec3(st.x * 3.0, st.y * 5.0 - time * 0.4, time * 0.1)) * 0.3;
+                n_aurora = (n_aurora / 3.0 + 1.0) * 0.5; // Normalize roughly
+                n_aurora = smoothstep(0.4, 0.8, n_aurora) * smoothstep(1.0, 0.3, st.y); // Fade towards top
+                
+                vec3 aurora_main_color = mix(COLOR_AURORA_GREEN, COLOR_AURORA_PINK, sin(st.x * 5.0 + time * 0.3) * 0.5 + 0.5);
+                aurora_main_color = mix(aurora_main_color, COLOR_AURORA_PURPLE, cos(st.y * 7.0 - time * 0.2) * 0.5 + 0.5);
+
+                aurora_color = aurora_main_color * n_aurora * aurora_strength;
+            }
+            vec3 final_color = sky_with_clouds + aurora_color;
+
+
+            // --- Precipitation Effect ---
+            if (u_precipitationIntensity > 0.01) {
+                if (u_precipitationType == 1.0) { // Rain
+                    // Subtle desaturation and shift to cooler grey
+                    final_color = mix(final_color, COLOR_RAIN_GREY, u_precipitationIntensity * 0.3);
+                    final_color *= (1.0 - u_precipitationIntensity * 0.1); // Slightly darken
+
+                    // Rain streaks (subtle)
+                    float rain_noise = fbm(vec3(st.x * 20.0, st.y * 50.0 - u_time * (1.0 + u_windSpeed * 0.2), u_time * 0.1), 3, 0.6);
+                    rain_noise = smoothstep(0.6, 0.8, rain_noise);
+                    final_color -= rain_noise * u_precipitationIntensity * 0.05;
+
+                } else if (u_precipitationType == 2.0) { // Snow
+                    // Shift to whiter/paler
+                    final_color = mix(final_color, COLOR_WINTER_WHITE, u_precipitationIntensity * 0.4);
+                    
+                    // Snowfall particles (very subtle, more like a haze)
+                    float snow_noise = fbm(vec3(st * 15.0 + vec2(0.0, -u_time * (0.2 + u_windSpeed * 0.05)), u_time * 0.05), 4, 0.5);
+                    snow_noise = smoothstep(0.55, 0.7, snow_noise);
+                    final_color = mix(final_color, vec3(1.0), snow_noise * u_precipitationIntensity * 0.15);
+                }
+            }
+
+            // --- Final Adjustments ---
+            // Cloud cover reduces overall contrast and brightness slightly
+            final_color = mix(final_color, COLOR_CLOUDY_GREY * 0.7 + final_color * 0.3, u_cloudCover * 0.3);
+            final_color *= (1.0 - u_cloudCover * 0.1);
+
+            gl_FragColor = vec4(clamp(final_color, 0.0, 1.0), 1.0);
+        }
+    </script>
+
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) {
+            // Fallback for no WebGL support
+            // It's good practice to inform the user or provide a static alternative
+            const controlsDiv = document.querySelector('.controls');
+            if (controlsDiv) controlsDiv.style.display = 'none'; // Hide controls if WebGL fails
+            
+            const bodyMessage = document.createElement('div');
+            bodyMessage.textContent = 'WebGL is not supported by your browser. This interactive visualization cannot be displayed.';
+            bodyMessage.style.color = 'white';
+            bodyMessage.style.textAlign = 'center';
+            bodyMessage.style.padding = '50px';
+            bodyMessage.style.fontSize = '18px';
+            document.body.insertBefore(bodyMessage, document.body.firstChild);
+            canvas.style.display = 'none'; // Hide canvas
+        } else {
+            // Proceed with WebGL setup only if context is available
+
+            const vertexShaderSource = document.getElementById('vertexShader').textContent;
+            const fragmentShaderSource = document.getElementById('fragmentShader').textContent;
+
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+            
+            // Check if shaders compiled successfully before creating program
+            if (!vertexShader || !fragmentShader) {
+                console.error("Shader compilation failed. Cannot create program.");
+                // Optionally, display a more user-friendly message on the page
+                // Removed illegal 'return;' statement here
+            }
+
+            const program = (!vertexShader || !fragmentShader) ? undefined : createProgram(gl, vertexShader, fragmentShader);
+            
+            if (!program) {
+                console.error("Program linking failed or shaders were invalid.");
+                // Optionally, display a more user-friendly message on the page
+                // Removed illegal 'return;' statement here
+            }
+            
+            // Only proceed with rendering setup if program is valid
+            if (program) {
+                // Look up attribute and uniform locations
+                const positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+                const resolutionUniformLocation = gl.getUniformLocation(program, "u_resolution");
+                const timeUniformLocation = gl.getUniformLocation(program, "u_time");
+                
+                const temperatureUniformLocation = gl.getUniformLocation(program, "u_temperature");
+                const windSpeedUniformLocation = gl.getUniformLocation(program, "u_windSpeed");
+                const cloudCoverUniformLocation = gl.getUniformLocation(program, "u_cloudCover");
+                const timeOfDayUniformLocation = gl.getUniformLocation(program, "u_timeOfDay");
+                const precipitationTypeUniformLocation = gl.getUniformLocation(program, "u_precipitationType");
+                const precipitationIntensityUniformLocation = gl.getUniformLocation(program, "u_precipitationIntensity");
+                const auroraActivityUniformLocation = gl.getUniformLocation(program, "u_auroraActivity");
+
+                // Create a buffer and put a single clipspace rectangle in it (2 triangles)
+                const positionBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+                const positions = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+                // Control elements
+                const controls = {
+                    temperature: document.getElementById('temperature'),
+                    windSpeed: document.getElementById('windSpeed'),
+                    cloudCover: document.getElementById('cloudCover'),
+                    timeOfDay: document.getElementById('timeOfDay'),
+                    precipitationType: document.getElementById('precipitationType'),
+                    precipitationIntensity: document.getElementById('precipitationIntensity'),
+                    auroraActivity: document.getElementById('auroraActivity'),
+                };
+                const valueDisplays = {
+                    temperature: document.getElementById('temperatureValue'),
+                    windSpeed: document.getElementById('windSpeedValue'),
+                    cloudCover: document.getElementById('cloudCoverValue'),
+                    timeOfDay: document.getElementById('timeOfDayValue'),
+                    precipitationType: document.getElementById('precipitationTypeValue'),
+                    precipitationIntensity: document.getElementById('precipitationIntensityValue'),
+                    auroraActivity: document.getElementById('auroraActivityValue'),
+                };
+                
+                // Update display values and precipitation intensity enable/disable
+                function updateControlDisplays() {
+                    valueDisplays.temperature.textContent = parseFloat(controls.temperature.value).toFixed(1);
+                    valueDisplays.windSpeed.textContent = parseFloat(controls.windSpeed.value).toFixed(1);
+                    valueDisplays.cloudCover.textContent = controls.cloudCover.value;
+                    valueDisplays.timeOfDay.textContent = parseFloat(controls.timeOfDay.value).toFixed(1);
+                    
+                    const precipType = controls.precipitationType.options[controls.precipitationType.selectedIndex].text;
+                    valueDisplays.precipitationType.textContent = precipType;
+                    
+                    if (controls.precipitationType.value === "0") { // None
+                        controls.precipitationIntensity.disabled = true;
+                        controls.precipitationIntensity.value = 0; // Reset intensity if type is None
+                    } else {
+                        controls.precipitationIntensity.disabled = false;
+                    }
+                    valueDisplays.precipitationIntensity.textContent = parseFloat(controls.precipitationIntensity.value).toFixed(2);
+                    valueDisplays.auroraActivity.textContent = parseFloat(controls.auroraActivity.value).toFixed(1);
+                }
+
+                Object.values(controls).forEach(control => control.addEventListener('input', updateControlDisplays));
+                controls.precipitationType.addEventListener('change', updateControlDisplays); // For select element
+                updateControlDisplays(); // Initial call
+
+
+                let startTime = Date.now();
+
+                function render() {
+                    resizeCanvasToDisplaySize(gl.canvas);
+                    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+                    gl.clearColor(0, 0, 0, 0);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+
+                    gl.useProgram(program);
+
+                    gl.enableVertexAttribArray(positionAttributeLocation);
+                    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+                    gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+
+                    gl.uniform2f(resolutionUniformLocation, gl.canvas.width, gl.canvas.height);
+                    gl.uniform1f(timeUniformLocation, (Date.now() - startTime) * 0.001);
+
+                    // Pass weather uniform values
+                    gl.uniform1f(temperatureUniformLocation, parseFloat(controls.temperature.value));
+                    gl.uniform1f(windSpeedUniformLocation, parseFloat(controls.windSpeed.value));
+                    gl.uniform1f(cloudCoverUniformLocation, parseFloat(controls.cloudCover.value) / 100.0); // 0-1
+                    gl.uniform1f(timeOfDayUniformLocation, parseFloat(controls.timeOfDay.value) / 24.0); // 0-1
+                    gl.uniform1f(precipitationTypeUniformLocation, parseFloat(controls.precipitationType.value));
+                    gl.uniform1f(precipitationIntensityUniformLocation, parseFloat(controls.precipitationIntensity.value));
+                    gl.uniform1f(auroraActivityUniformLocation, parseFloat(controls.auroraActivity.value) / 9.0); // 0-1
+
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+                    requestAnimationFrame(render);
+                }
+                 render(); // Start the animation loop
+            } // End of if(program) block
+
+            // Helper functions
+            function createShader(gl, type, source) {
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                const success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+                if (success) return shader;
+                
+                const errorLog = gl.getShaderInfoLog(shader);
+                console.error("Shader compilation error for " + (type === gl.VERTEX_SHADER ? "Vertex" : "Fragment") + " Shader:\n" + errorLog);
+                // Display error in a more user-friendly way on the page
+                const errorDisplay = document.createElement('pre');
+                errorDisplay.style.color = 'red';
+                errorDisplay.style.position = 'fixed';
+                errorDisplay.style.top = '10px';
+                errorDisplay.style.left = '330px'; // Next to controls
+                errorDisplay.style.backgroundColor = 'rgba(0,0,0,0.8)';
+                errorDisplay.style.padding = '10px';
+                errorDisplay.style.zIndex = '20';
+                errorDisplay.textContent = "Shader Compilation Error:\n" + errorLog;
+                document.body.appendChild(errorDisplay);
+
+                gl.deleteShader(shader);
+                return undefined; // Explicitly return undefined on failure
+            }
+
+            function createProgram(gl, vertexShader, fragmentShader) {
+                // Ensure shaders are valid before proceeding
+                if (!vertexShader || !fragmentShader) {
+                    console.error("Cannot create program with invalid shaders.");
+                    return undefined;
+                }
+
+                const program = gl.createProgram();
+                gl.attachShader(program, vertexShader);
+                gl.attachShader(program, fragmentShader);
+                gl.linkProgram(program);
+                const success = gl.getProgramParameter(program, gl.LINK_STATUS);
+                if (success) return program;
+                
+                console.error("Program linking error:", gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                return undefined; // Explicitly return undefined on failure
+            }
+
+            function resizeCanvasToDisplaySize(canvas) {
+                const displayWidth  = canvas.clientWidth;
+                const displayHeight = canvas.clientHeight;
+                if (canvas.width  !== displayWidth || canvas.height !== displayHeight) {
+                    canvas.width  = displayWidth;
+                    canvas.height = displayHeight;
+                    return true;
+                }
+                return false;
+            }
+        }
+    </script>
+</body>
+</html>
